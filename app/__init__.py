@@ -1,0 +1,2 @@
+"""Clients QR application package."""
+
