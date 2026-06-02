@@ -212,8 +212,8 @@ async def admin_dashboard(
         inactive_since=inactive,
         purchase_status=purchase_status,
     )
-    stats = compute_stats(db, date_from=start, date_to=end)
-    daily = daily_activity(db, date_from=start, date_to=end)
+    stats = compute_stats(db, exact_date=exact, date_from=start, date_to=end)
+    daily = daily_activity(db, exact_date=exact, date_from=start, date_to=end)
     header_html = f"""
     <div class="admin-header">
       <div class="admin-header-left">
@@ -422,6 +422,40 @@ async def admin_dashboard(
         border-radius: 10px;
         line-height: 1;
       }}
+      .section-panel {{
+        margin-top: 1rem;
+      }}
+      .section-header {{
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.75rem;
+        margin-bottom: 0.75rem;
+      }}
+      .section-title {{
+        margin: 0;
+      }}
+      .section-toggle {{
+        width: auto;
+        min-width: 40px;
+        height: 40px;
+        padding: 0 0.7rem;
+        border-radius: 10px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0.35rem;
+        font-size: 0.9rem;
+        line-height: 1;
+        flex: 0 0 auto;
+      }}
+      .section-toggle-icon {{
+        font-size: 1rem;
+        line-height: 1;
+      }}
+      .section-body[hidden] {{
+        display: none !important;
+      }}
       .compact-mail {{
         display: inline-block;
         max-width: 150px;
@@ -452,6 +486,36 @@ async def admin_dashboard(
         min-height: 96px;
         resize: vertical;
       }}
+      .purchases-section table th:nth-child(8),
+      .purchases-section table td:nth-child(8) {{
+        min-width: 170px;
+        white-space: nowrap;
+      }}
+      .purchases-scrollbar {{
+        overflow-x: auto;
+        overflow-y: hidden;
+        height: 16px;
+        margin: 0.15rem 0;
+        scrollbar-gutter: stable;
+      }}
+      .purchases-scrollbar-spacer {{
+        height: 1px;
+      }}
+      .purchases-table-scroll {{
+        overflow-x: auto;
+        overflow-y: auto;
+        max-height: calc(5 * 3.6rem + 3.25rem);
+        scrollbar-gutter: stable;
+      }}
+      .purchases-table-scroll table thead th {{
+        position: sticky;
+        top: 0;
+        z-index: 3;
+        background: rgba(2, 6, 23, 0.96);
+      }}
+      .shell-light .purchases-table-scroll table thead th {{
+        background: #ffffff;
+      }}
     </style>
     {cards}
     <div class="panel filters-panel">
@@ -459,22 +523,147 @@ async def admin_dashboard(
       <div class="filter-summary">{filters_summary}</div>
     </div>
     <div class="panel filters-panel">{filter_form}</div>
-    <div class="panel">
-      <h2>Actividad diaria</h2>
-      {table(["Dia", "Interacciones", "Compras", "Aprobadas", "Rechazadas", "Fallidas", "Pendientes"], daily_rows)}
+    <div class="panel section-panel">
+      <div class="section-header">
+        <h2 class="section-title">Actividad diaria</h2>
+        <button class="section-toggle" type="button" data-toggle-section aria-expanded="false">
+          <span class="section-toggle-icon" aria-hidden="true">▸</span>
+        </button>
+      </div>
+      <div class="section-body" hidden>
+        {table(["Dia", "Interacciones", "Compras", "Aprobadas", "Rechazadas", "Fallidas", "Pendientes"], daily_rows)}
+      </div>
     </div>
-    <div class="panel">
-      <h2>Clientes</h2>
-      {table(["Cliente", "Telefono", "Mail", "Tier", "Ultima compra", "Total", "Pend.", "Aprob.", "Rech.", "Fall.", "Detalle"], customer_rows)}
+    <div class="panel section-panel">
+      <div class="section-header">
+        <h2 class="section-title">Clientes</h2>
+        <button class="section-toggle" type="button" data-toggle-section aria-expanded="false">
+          <span class="section-toggle-icon" aria-hidden="true">▸</span>
+        </button>
+      </div>
+      <div class="section-body" hidden>
+        {table(["Cliente", "Telefono", "Mail", "Tier", "Ultima compra", "Total", "Pend.", "Aprob.", "Rech.", "Fall.", "Detalle"], customer_rows)}
+      </div>
     </div>
-    <div class="panel">
-      <h2>Compras</h2>
-      {table(["ID", "Cliente", "Telefono", "Mail", "Tier", "Descripcion", "Monto", "Fecha", "Estado", "Descripcion popup", "Monto edit", "Acciones"], purchase_rows)}
+    <div class="panel section-panel">
+      <div class="section-header">
+        <h2 class="section-title">Compras</h2>
+        <button class="section-toggle" type="button" data-toggle-section aria-expanded="false">
+          <span class="section-toggle-icon" aria-hidden="true">▸</span>
+        </button>
+      </div>
+      <div class="section-body purchases-section" hidden>
+        <div class="purchases-scrollbar purchases-scrollbar-top" data-purchases-scrollbar>
+          <div class="purchases-scrollbar-spacer" data-purchases-spacer></div>
+        </div>
+        <div class="purchases-table-scroll" data-purchases-table-scroll>
+          {table(["ID", "Cliente", "Telefono", "Mail (opcional)", "Tier", "Descripcion", "Monto", "Fecha", "Estado", "Descripcion", "Monto", "Acciones"], purchase_rows)}
+        </div>
+        <div class="purchases-scrollbar purchases-scrollbar-bottom" data-purchases-scrollbar>
+          <div class="purchases-scrollbar-spacer" data-purchases-spacer></div>
+        </div>
+      </div>
     </div>
     <script>
+      function syncPurchasesScrollbars() {{
+        const purchasesSection = document.querySelector(".purchases-section");
+        if (!(purchasesSection instanceof HTMLElement)) {{
+          return;
+        }}
+        const tableScroll = purchasesSection.querySelector("[data-purchases-table-scroll]");
+        const scrollbars = Array.from(purchasesSection.querySelectorAll("[data-purchases-scrollbar]"));
+        const spacers = Array.from(purchasesSection.querySelectorAll("[data-purchases-spacer]"));
+        if (!(tableScroll instanceof HTMLElement) || !scrollbars.length || !spacers.length) {{
+          return;
+        }}
+        const scrollWidth = tableScroll.scrollWidth;
+        spacers.forEach(function (spacer) {{
+          if (spacer instanceof HTMLElement) {{
+            spacer.style.width = scrollWidth + "px";
+          }}
+        }});
+        scrollbars.forEach(function (scrollbar) {{
+          if (scrollbar instanceof HTMLElement && scrollbar.scrollLeft !== tableScroll.scrollLeft) {{
+            scrollbar.scrollLeft = tableScroll.scrollLeft;
+          }}
+        }});
+      }}
+
+      function bindPurchasesScrollbars() {{
+        const purchasesSection = document.querySelector(".purchases-section");
+        if (!(purchasesSection instanceof HTMLElement)) {{
+          return;
+        }}
+        const tableScroll = purchasesSection.querySelector("[data-purchases-table-scroll]");
+        const scrollbars = Array.from(purchasesSection.querySelectorAll("[data-purchases-scrollbar]"));
+        if (!(tableScroll instanceof HTMLElement) || !scrollbars.length) {{
+          return;
+        }}
+
+        let syncing = false;
+        function syncFrom(source) {{
+          if (syncing) {{
+            return;
+          }}
+          syncing = true;
+          const nextScrollLeft = source.scrollLeft;
+          tableScroll.scrollLeft = nextScrollLeft;
+          scrollbars.forEach(function (scrollbar) {{
+            if (scrollbar !== source) {{
+              scrollbar.scrollLeft = nextScrollLeft;
+            }}
+          }});
+          syncing = false;
+        }}
+
+        [tableScroll].concat(scrollbars).forEach(function (scrollbar) {{
+          scrollbar.addEventListener("scroll", function (event) {{
+            const target = event.currentTarget;
+            if (target instanceof HTMLElement) {{
+              syncFrom(target);
+            }}
+          }}, {{ passive: true }});
+        }});
+
+        if (typeof ResizeObserver !== "undefined") {{
+          const observer = new ResizeObserver(function () {{
+            syncPurchasesScrollbars();
+          }});
+          observer.observe(tableScroll);
+        }} else {{
+          window.addEventListener("resize", syncPurchasesScrollbars, {{ passive: true }});
+        }}
+
+        syncPurchasesScrollbars();
+      }}
+
+      document.addEventListener("DOMContentLoaded", function () {{
+        bindPurchasesScrollbars();
+      }});
+
       document.addEventListener("click", function (event) {{
         const target = event.target;
         if (!(target instanceof HTMLElement)) {{
+          return;
+        }}
+        const sectionToggle = target.closest("[data-toggle-section]");
+        if (sectionToggle instanceof HTMLElement) {{
+          const panel = sectionToggle.closest(".section-panel");
+          if (panel) {{
+            const body = panel.querySelector(".section-body");
+            const icon = sectionToggle.querySelector(".section-toggle-icon");
+            const expanded = sectionToggle.getAttribute("aria-expanded") === "true";
+            sectionToggle.setAttribute("aria-expanded", expanded ? "false" : "true");
+            if (body instanceof HTMLElement) {{
+              body.hidden = expanded;
+              if (body.classList.contains("purchases-section") && !expanded) {{
+                window.setTimeout(syncPurchasesScrollbars, 0);
+              }}
+            }}
+            if (icon) {{
+              icon.textContent = expanded ? "▸" : "▾";
+            }}
+          }}
           return;
         }}
         const openDialogId = target.getAttribute("data-open-dialog");
@@ -530,58 +719,6 @@ async def api_admin_customers(
         purchase_status=purchase_status,
     )
     return JSONResponse({"items": customers})
-
-
-@router.get("/api/admin/purchases")
-async def api_admin_purchases(
-    request: Request,
-    admin_email: str = Depends(require_admin),
-    db: Session = Depends(get_db),
-    q: str | None = Query(None),
-    phone: str | None = Query(None),
-    email: str | None = Query(None),
-    tier: str | None = Query(None),
-    max_amount: str | None = Query(None),
-    exact_date: str | None = Query(None),
-    date_from: str | None = Query(None),
-    date_to: str | None = Query(None),
-    inactive_since: str | None = Query(None),
-    purchase_status: str | None = Query(None),
-):
-    _ = request, admin_email
-    try:
-        normalized_tier = normalize_customer_tier(tier)
-        normalized_amount = parse_optional_non_negative_int(max_amount)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    purchases = list_purchases(
-        db,
-        name=q,
-        phone=phone,
-        email=email,
-        tier=normalized_tier,
-        max_amount=normalized_amount,
-        exact_date=parse_date(exact_date),
-        date_from=parse_date(date_from),
-        date_to=parse_date(date_to),
-        inactive_since=parse_date(inactive_since),
-        purchase_status=purchase_status,
-    )
-    return JSONResponse({"items": purchases})
-
-
-@router.get("/api/admin/stats")
-async def api_admin_stats(
-    request: Request,
-    admin_email: str = Depends(require_admin),
-    db: Session = Depends(get_db),
-    date_from: str | None = Query(None),
-    date_to: str | None = Query(None),
-):
-    _ = request, admin_email
-    stats = compute_stats(db, date_from=parse_date(date_from), date_to=parse_date(date_to))
-    stats["daily"] = daily_activity(db, date_from=parse_date(date_from), date_to=parse_date(date_to))
-    return JSONResponse(stats)
 
 
 @router.get("/admin/customers/{customer_id}", response_class=HTMLResponse)

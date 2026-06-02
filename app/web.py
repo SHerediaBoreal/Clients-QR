@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import base64
-from datetime import date, datetime
+from datetime import date, datetime, time
 from html import escape
 from functools import lru_cache
 from pathlib import Path
@@ -10,6 +10,7 @@ from typing import Iterable
 from fastapi.responses import HTMLResponse
 
 from app.core.config import settings
+from app.core.timezones import BUENOS_AIRES_TZ, to_buenos_aires
 
 
 class SafeHTML(str):
@@ -34,7 +35,7 @@ def _coerce_datetime(value: datetime | date | str | None) -> datetime | None:
     if isinstance(value, datetime):
         return value
     if isinstance(value, date):
-        return datetime.combine(value, datetime.min.time())
+        return datetime.combine(value, time.min, tzinfo=BUENOS_AIRES_TZ)
     if isinstance(value, str):
         candidate = value.replace("Z", "+00:00")
         try:
@@ -49,14 +50,16 @@ def format_dt(value: datetime | date | str | None) -> str:
     parsed = _coerce_datetime(value)
     if parsed is None:
         return "-"
-    return parsed.astimezone().strftime("%Y-%m-%d %H:%M:%S")
+    return to_buenos_aires(parsed).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def format_date_only(value: datetime | date | str | None) -> str:
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return value.isoformat()
     parsed = _coerce_datetime(value)
     if parsed is None:
         return "-"
-    return parsed.astimezone().strftime("%Y-%m-%d")
+    return to_buenos_aires(parsed).strftime("%Y-%m-%d")
 
 
 def status_badge(status: str) -> str:
@@ -132,6 +135,10 @@ def page(
       background:
         linear-gradient(rgba(2, 6, 23, 0.42), rgba(2, 6, 23, 0.42)),
         url("{_public_background_data_uri()}") center center / cover no-repeat fixed;
+    }}
+    body.body-public-bg,
+    body.body-public-bg::before {{
+      min-height: 100vh;
     }}
     body.body-public-bg::before {{
       content: "";
@@ -349,7 +356,7 @@ def page(
       }}
     }}
     .shell-public {{
-      min-height: calc(100vh - 2.5rem);
+      min-height: calc(100dvh - 2.5rem);
       display: flex;
       flex-direction: column;
       justify-content: center;
@@ -366,16 +373,31 @@ def page(
       flex-direction: column;
       gap: 1rem;
     }}
+    .shell-public-result .public-center {{
+      max-width: 640px;
+    }}
     .public-center .notice,
     .public-center .card {{
       width: 100%;
     }}
     .shell-public .public-center {{
-      min-height: calc(100vh - 7rem);
+      min-height: calc(100dvh - 7rem);
     }}
     .shell-public .public-center .card {{
       max-width: 760px;
       margin: 0 auto;
+    }}
+    .shell-public .public-register-grid {{
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }}
+    .shell-public .public-register-actions {{
+      margin-top: 1rem;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 0.75rem;
+    }}
+    .shell-public .public-register-actions .btn {{
+      width: 100%;
     }}
     .header {{
       display:flex; justify-content:space-between; gap:1rem; flex-wrap:wrap;
@@ -578,6 +600,49 @@ def page(
     .split {{ display:grid; grid-template-columns: 1.15fr 0.85fr; gap:1rem; }}
     @media (max-width: 960px) {{
       .split {{ grid-template-columns: 1fr; }}
+    }}
+    @media (max-width: 640px) {{
+      .container {{
+        padding: 0.6rem;
+      }}
+      .shell {{
+        padding: 0.9rem;
+        border-radius: 16px;
+      }}
+      .shell-public {{
+        min-height: calc(100dvh - 1.2rem);
+      }}
+      .shell-public .public-center {{
+        min-height: auto;
+        gap: 0.7rem;
+      }}
+      .shell-public .public-center .card {{
+        max-width: none;
+      }}
+      .shell-public .public-center .notice {{
+        max-width: none;
+      }}
+      .shell-public .public-register-grid {{
+        grid-template-columns: 1fr;
+        gap: 0.65rem;
+      }}
+      .shell-public .public-register-actions {{
+        grid-template-columns: 1fr;
+        gap: 0.6rem;
+      }}
+      .shell-public .public-register-actions .btn {{
+        padding: 0.78rem 0.85rem;
+      }}
+      .public-center .notice {{
+        padding: 0.8rem 0.9rem;
+      }}
+      body.body-public-bg {{
+        background-attachment: scroll;
+        background-position: center top;
+      }}
+      body.body-public-bg::before {{
+        position: absolute;
+      }}
     }}
   </style>
 </head>

@@ -2,14 +2,15 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import date, datetime
 from typing import Any
 
 from sqlalchemy import Select, case, func, or_, select
 from sqlalchemy.orm import Session
 
-from app.core.security import hash_value, normalize_email, normalize_phone, utcnow
-from app.models import AdminUser, AuditLog, Customer, CustomerIdentity, Purchase, RegistrationAttempt
+from app.core.security import hash_value, normalize_email, normalize_phone, normalize_text
+from app.core.timezones import end_of_day_utc, now_buenos_aires, start_of_day_utc, to_buenos_aires
+from app.models import AdminUser, AuditLog, Customer, Purchase, RegistrationAttempt
 
 
 class NotFoundError(Exception):
@@ -125,6 +126,39 @@ def admin_local_login_allowed(db: Session, email: str, phone: str) -> bool:
     return user.phone_hash == hash_value(normalized_phone)
 
 
+def _registration_customer_candidates(
+    db: Session,
+    *,
+    first_name: str,
+    last_name: str,
+    phone: str,
+) -> list[Customer]:
+    rows = db.scalars(
+        select(Customer)
+        .where(
+            func.lower(func.trim(Customer.first_name)) == first_name,
+            func.lower(func.trim(Customer.last_name)) == last_name,
+        )
+        .order_by(Customer.updated_at.desc(), Customer.id.desc())
+    ).all()
+    return [customer for customer in rows if normalize_phone(customer.phone) == phone]
+
+
+def _pick_registration_customer(candidates: list[Customer], email: str | None) -> Customer | None:
+    if not candidates:
+        return None
+
+    if email:
+        for candidate in candidates:
+            if normalize_email(candidate.email) == email:
+                return candidate
+        for candidate in candidates:
+            if not normalize_email(candidate.email):
+                return candidate
+
+    return candidates[0]
+
+
 def get_or_create_customer(
     db: Session,
     *,
@@ -132,22 +166,22 @@ def get_or_create_customer(
     last_name: str,
     phone: str | None,
     email: str | None,
-    google_sub: str | None,
 ) -> Customer:
-    normalized_email = normalize_email(email)
+    normalized_first_name = normalize_text(first_name)
+    normalized_last_name = normalize_text(last_name)
     normalized_phone = normalize_phone(phone)
-    normalized_google_sub = google_sub.strip() if google_sub else None
+    normalized_email = normalize_email(email)
 
-    candidate: Customer | None = None
+    if not normalized_first_name or not normalized_last_name or not normalized_phone:
+        raise ValueError("Datos de cliente incompletos")
 
-    if normalized_google_sub:
-        candidate = db.scalar(select(Customer).where(Customer.google_sub == normalized_google_sub))
-
-    if candidate is None and normalized_email:
-        candidate = db.scalar(select(Customer).where(Customer.email == normalized_email))
-
-    if candidate is None and normalized_phone:
-        candidate = db.scalar(select(Customer).where(Customer.phone == normalized_phone))
+    candidates = _registration_customer_candidates(
+        db,
+        first_name=normalized_first_name,
+        last_name=normalized_last_name,
+        phone=normalized_phone,
+    )
+    candidate = _pick_registration_customer(candidates, normalized_email)
 
     if candidate is None:
         candidate = Customer(
@@ -155,7 +189,6 @@ def get_or_create_customer(
             last_name=last_name.strip(),
             phone=normalized_phone,
             email=normalized_email,
-            google_sub=normalized_google_sub,
             status="active",
         )
         db.add(candidate)
@@ -169,26 +202,6 @@ def get_or_create_customer(
             candidate.phone = normalized_phone
         if normalized_email and not candidate.email:
             candidate.email = normalized_email
-        if normalized_google_sub and not candidate.google_sub:
-            candidate.google_sub = normalized_google_sub
-
-    if normalized_google_sub:
-        identity = db.scalar(
-            select(CustomerIdentity).where(
-                CustomerIdentity.provider == "google",
-                CustomerIdentity.provider_subject == normalized_google_sub,
-            )
-        )
-        if identity is None:
-            db.add(
-                CustomerIdentity(
-                    customer=candidate,
-                    provider="google",
-                    provider_subject=normalized_google_sub,
-                    provider_email=normalized_email,
-                    verified_at=utcnow(),
-                )
-            )
 
     db.flush()
     return candidate
@@ -289,7 +302,7 @@ def create_purchase(
 ) -> Purchase:
     purchase = Purchase(
         customer_id=customer_id,
-        purchase_date=purchase_date or utcnow(),
+        purchase_date=purchase_date or now_buenos_aires(),
         status=status,
         source_token=source_token,
         description=description,
@@ -317,7 +330,6 @@ def register_public_purchase(
     last_name = last_name.strip()
     phone_norm = normalize_phone(phone)
     email_norm = normalize_email(email)
-    google_sub_norm = google_sub.strip() if google_sub else None
 
     if not first_name or not last_name or not phone_norm:
         attempt = create_registration_attempt(
@@ -345,7 +357,6 @@ def register_public_purchase(
         last_name=last_name,
         phone=phone_norm,
         email=email_norm,
-        google_sub=google_sub_norm,
     )
 
     attempt = create_registration_attempt(
@@ -418,11 +429,28 @@ def _jsonify_row(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def start_of_day(value: date) -> datetime:
-    return datetime.combine(value, time.min, tzinfo=UTC)
+    return start_of_day_utc(value)
 
 
 def end_of_day(value: date) -> datetime:
-    return datetime.combine(value, time.max, tzinfo=UTC)
+    return end_of_day_utc(value)
+
+
+def _apply_date_filters(
+    query,
+    column,
+    *,
+    exact_date: date | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+):
+    if exact_date:
+        query = query.where(column >= start_of_day(exact_date), column <= end_of_day(exact_date))
+    if date_from:
+        query = query.where(column >= start_of_day(date_from))
+    if date_to:
+        query = query.where(column <= end_of_day(date_to))
+    return query
 
 
 def customer_summary_subquery() -> Select[tuple[Any, ...]]:
@@ -483,18 +511,15 @@ def list_customers(
         q = q.where(or_(summary.c.latest_purchase_date.is_(None), summary.c.latest_purchase_date < cutoff))
     if exact_date or date_from or date_to or purchase_status:
         purchase_filters = select(Purchase.customer_id)
-        conditions = []
-        if exact_date:
-            conditions.append(Purchase.purchase_date >= start_of_day(exact_date))
-            conditions.append(Purchase.purchase_date <= end_of_day(exact_date))
-        if date_from:
-            conditions.append(Purchase.purchase_date >= start_of_day(date_from))
-        if date_to:
-            conditions.append(Purchase.purchase_date <= end_of_day(date_to))
+        purchase_filters = _apply_date_filters(
+            purchase_filters,
+            Purchase.purchase_date,
+            exact_date=exact_date,
+            date_from=date_from,
+            date_to=date_to,
+        )
         if purchase_status:
-            conditions.append(Purchase.status == purchase_status)
-        for condition in conditions:
-            purchase_filters = purchase_filters.where(condition)
+            purchase_filters = purchase_filters.where(Purchase.status == purchase_status)
         q = q.where(summary.c.id.in_(purchase_filters.distinct()))
 
     q = q.order_by(summary.c.last_name.asc(), summary.c.first_name.asc(), summary.c.id.desc())
@@ -545,12 +570,7 @@ def list_purchases(
         q = q.where(Customer.tier == normalize_customer_tier(tier))
     if max_amount is not None:
         q = q.where(Purchase.amount.is_not(None), Purchase.amount <= max_amount)
-    if exact_date:
-        q = q.where(Purchase.purchase_date >= start_of_day(exact_date), Purchase.purchase_date <= end_of_day(exact_date))
-    if date_from:
-        q = q.where(Purchase.purchase_date >= start_of_day(date_from))
-    if date_to:
-        q = q.where(Purchase.purchase_date <= end_of_day(date_to))
+    q = _apply_date_filters(q, Purchase.purchase_date, exact_date=exact_date, date_from=date_from, date_to=date_to)
     if purchase_status:
         q = q.where(Purchase.status == purchase_status)
     if inactive_since:
@@ -563,7 +583,7 @@ def list_purchases(
         )
         q = q.outerjoin(latest, latest.c.customer_id == Customer.id).where(or_(latest.c.latest_approved.is_(None), latest.c.latest_approved < cutoff))
 
-    q = q.order_by(Purchase.purchase_date.desc(), Purchase.id.desc())
+    q = q.order_by(Purchase.id.desc())
     rows = db.execute(q).mappings().all()
     return [_jsonify_row(dict(row)) for row in rows]
 
@@ -571,17 +591,26 @@ def list_purchases(
 def compute_stats(
     db: Session,
     *,
+    exact_date: date | None = None,
     date_from: date | None = None,
     date_to: date | None = None,
 ) -> dict[str, Any]:
     attempts = select(RegistrationAttempt)
     purchases = select(Purchase)
-    if date_from:
-        attempts = attempts.where(RegistrationAttempt.created_at >= start_of_day(date_from))
-        purchases = purchases.where(Purchase.purchase_date >= start_of_day(date_from))
-    if date_to:
-        attempts = attempts.where(RegistrationAttempt.created_at <= end_of_day(date_to))
-        purchases = purchases.where(Purchase.purchase_date <= end_of_day(date_to))
+    attempts = _apply_date_filters(
+        attempts,
+        RegistrationAttempt.created_at,
+        exact_date=exact_date,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    purchases = _apply_date_filters(
+        purchases,
+        Purchase.purchase_date,
+        exact_date=exact_date,
+        date_from=date_from,
+        date_to=date_to,
+    )
 
     attempt_rows = db.execute(attempts).scalars().all()
     purchase_rows = db.execute(purchases).scalars().all()
@@ -623,17 +652,26 @@ def compute_stats(
 def daily_activity(
     db: Session,
     *,
+    exact_date: date | None = None,
     date_from: date | None = None,
     date_to: date | None = None,
 ) -> list[dict[str, Any]]:
     attempts = select(RegistrationAttempt)
     purchases = select(Purchase)
-    if date_from:
-        attempts = attempts.where(RegistrationAttempt.created_at >= start_of_day(date_from))
-        purchases = purchases.where(Purchase.purchase_date >= start_of_day(date_from))
-    if date_to:
-        attempts = attempts.where(RegistrationAttempt.created_at <= end_of_day(date_to))
-        purchases = purchases.where(Purchase.purchase_date <= end_of_day(date_to))
+    attempts = _apply_date_filters(
+        attempts,
+        RegistrationAttempt.created_at,
+        exact_date=exact_date,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    purchases = _apply_date_filters(
+        purchases,
+        Purchase.purchase_date,
+        exact_date=exact_date,
+        date_from=date_from,
+        date_to=date_to,
+    )
 
     attempt_rows = db.execute(attempts).scalars().all()
     purchase_rows = db.execute(purchases).scalars().all()
@@ -641,12 +679,12 @@ def daily_activity(
     aggregated: dict[str, dict[str, Any]] = {}
 
     for attempt in attempt_rows:
-        day = attempt.created_at.astimezone().date().isoformat()
+        day = to_buenos_aires(attempt.created_at).date().isoformat()
         item = aggregated.setdefault(day, {"day": day, "attempts": 0, "purchases": 0, "approved": 0, "rejected": 0, "failed": 0, "pending": 0})
         item["attempts"] += 1
 
     for purchase in purchase_rows:
-        day = purchase.purchase_date.astimezone().date().isoformat()
+        day = to_buenos_aires(purchase.purchase_date).date().isoformat()
         item = aggregated.setdefault(day, {"day": day, "attempts": 0, "purchases": 0, "approved": 0, "rejected": 0, "failed": 0, "pending": 0})
         item["purchases"] += 1
         if purchase.status == "approved":
@@ -658,4 +696,4 @@ def daily_activity(
         elif purchase.status == "pending":
             item["pending"] += 1
 
-    return [aggregated[key] for key in sorted(aggregated)]
+    return [aggregated[key] for key in sorted(aggregated, reverse=True)]

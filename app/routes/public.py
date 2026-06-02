@@ -3,28 +3,17 @@ from __future__ import annotations
 from html import escape
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi import APIRouter, Depends, Form, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
 from app.db import get_db
 from app.schemas import PublicRegisterPayload
 from app.services import register_public_purchase
 from app.web import page
 
 router = APIRouter(tags=["public"])
-
-
-def _public_context(request: Request) -> dict[str, str | None]:
-    identity = request.session.get("public_identity") or {}
-    return {
-        "first_name": identity.get("first_name"),
-        "last_name": identity.get("last_name"),
-        "email": identity.get("email"),
-        "google_sub": identity.get("sub"),
-    }
 
 
 def _public_registration_failure(public_token: str, message: str) -> RedirectResponse:
@@ -37,31 +26,53 @@ def _public_registration_error_message(error: ValidationError) -> str:
     for item in error.errors():
         field = item.get("loc", [None])[0]
         if field == "email":
-            messages.append("El mail ingresado no es válido.")
+            messages.append("El mail ingresado no es v\u00e1lido.")
         elif field == "phone":
-            messages.append(str(item.get("msg") or "El teléfono ingresado no es válido."))
-    return " ".join(messages) or "Revisá el mail y el teléfono ingresados."
+            messages.append(str(item.get("msg") or "El tel\u00e9fono ingresado no es v\u00e1lido."))
+    return " ".join(messages) or "Revis\u00e1 el mail y el tel\u00e9fono ingresados."
+
+
+def _public_form_context(request: Request) -> dict[str, str]:
+    values = {"first_name": "", "last_name": "", "email": "", "phone": ""}
+
+    stored_values = request.session.get("public_form_values")
+    if isinstance(stored_values, dict):
+        for key in values:
+            raw_value = stored_values.get(key)
+            if raw_value is not None:
+                values[key] = str(raw_value)
+
+    identity = request.session.get("public_identity")
+    if isinstance(identity, dict):
+        if not values["first_name"]:
+            values["first_name"] = str(identity.get("first_name") or "")
+        if not values["last_name"]:
+            values["last_name"] = str(identity.get("last_name") or "")
+        if not values["email"]:
+            values["email"] = str(identity.get("email") or "")
+
+    return values
 
 
 @router.get("/r/{public_token}", response_class=HTMLResponse)
 async def public_register_page(request: Request, public_token: str):
-    identity = _public_context(request)
+    form_values = _public_form_context(request)
     body = f"""
     <div class="public-center">
       <div class="notice">
-        Escaneá, completá los datos y sumate a Suplementos Yerba Buena
+        Escane\u00e1, complet\u00e1 los datos y sumate a Suplementos Yerba Buena
       </div>
       <div class="card">
         <h2>Registro</h2>
-        <form method="post" action="/api/public/register">
+        <form method="post" action="/api/public/register" autocomplete="off">
           <input type="hidden" name="public_token" value="{escape(public_token)}" />
-          <div class="filters" style="grid-template-columns:repeat(auto-fit, minmax(220px, 1fr));">
-            <input class="input" name="first_name" placeholder="Nombre" value="{escape(identity.get('first_name') or '')}" required />
-            <input class="input" name="last_name" placeholder="Apellido" value="{escape(identity.get('last_name') or '')}" required />
-            <input class="input" name="phone" type="tel" inputmode="tel" autocomplete="tel" placeholder="Teléfono" required />
-            <input class="input" name="email" type="email" autocomplete="email" placeholder="Mail (opcional)" value="{escape(identity.get('email') or '')}" />
+          <div class="filters public-register-grid">
+            <input class="input" name="first_name" value="{escape(form_values['first_name'])}" placeholder="Nombre" autocomplete="off" required />
+            <input class="input" name="last_name" value="{escape(form_values['last_name'])}" placeholder="Apellido" autocomplete="off" required />
+            <input class="input" name="email" type="email" value="{escape(form_values['email'])}" autocomplete="off" placeholder="Mail (opcional)" />
+            <input class="input" name="phone" type="tel" inputmode="numeric" pattern="[0-9]*" oninput="this.value=this.value.replace(/\\D/g, '')" value="{escape(form_values['phone'])}" autocomplete="off" placeholder="Tel\u00e9fono" required />
           </div>
-          <div class="actions" style="margin-top:1rem;">
+          <div class="actions public-register-actions">
             <button class="btn" type="submit">Registrar compra</button>
             <a class="btn" href="/auth/public/google/login?next=/r/{escape(public_token)}">Entrar con Google</a>
           </div>
@@ -83,7 +94,7 @@ async def public_result_page(request: Request, public_token: str, status: str = 
     badge = "success" if success else "failure"
     title = "Registro exitoso" if success else "Registro fallido"
     body_class = "success" if success else "failure"
-    default_message = "La compra quedó registrada correctamente." if success else "No se pudo registrar la compra."
+    default_message = "La compra qued\u00f3 registrada correctamente." if success else "No se pudo registrar la compra."
     body = f"""
     <div class="notice {body_class}">
       <strong>{escape(title)}.</strong> {escape(message or default_message)}
@@ -91,7 +102,13 @@ async def public_result_page(request: Request, public_token: str, status: str = 
     <p>{badge}</p>
     <p><a class="btn" href="/r/{escape(public_token)}">Volver</a></p>
     """
-    return page(title, body, subtitle="Respuesta final para el cliente")
+    return page(
+        title,
+        body,
+        subtitle="Respuesta final para el cliente",
+        shell_class="shell shell-public shell-public-result",
+        body_class="body-public-bg",
+    )
 
 
 @router.post("/api/public/register")
@@ -105,6 +122,12 @@ async def public_register(
     google_sub: str | None = Form(None),
     public_token: str = Form(...),
 ):
+    request.session["public_form_values"] = {
+        "first_name": first_name,
+        "last_name": last_name,
+        "phone": phone,
+        "email": email or "",
+    }
     try:
         payload = PublicRegisterPayload.model_validate(
             {
@@ -127,43 +150,13 @@ async def public_register(
         last_name=payload.last_name,
         phone=payload.phone,
         email=str(payload.email) if payload.email else None,
-        google_sub=payload.google_sub or (request.session.get("public_identity") or {}).get("sub"),
+        google_sub=payload.google_sub,
         public_token=payload.public_token or public_token,
         request_ip=ip,
         user_agent=user_agent,
     )
-    message = "La compra fue registrada y quedó pendiente de revisión."
+    message = "La compra fue registrada y qued\u00f3 pendiente de revisi\u00f3n."
     if not result.success:
         message = "No fue posible registrar la compra."
     query = urlencode({"status": "success" if result.success else "failure", "message": message})
     return RedirectResponse(url=f"/r/{escape(public_token)}/result?{query}", status_code=303)
-
-
-@router.post("/api/public/purchase-intent")
-async def public_purchase_intent(request: Request, db: Session = Depends(get_db)):
-    try:
-        payload = PublicRegisterPayload.model_validate(await request.json())
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=400, detail="Payload inválido") from exc
-
-    ip = request.client.host if request.client else None
-    user_agent = request.headers.get("user-agent")
-    result = register_public_purchase(
-        db,
-        first_name=payload.first_name,
-        last_name=payload.last_name,
-        phone=payload.phone,
-        email=str(payload.email) if payload.email else None,
-        google_sub=payload.google_sub,
-        public_token=payload.public_token or settings.public_token,
-        request_ip=ip,
-        user_agent=user_agent,
-    )
-    return JSONResponse(
-        {
-            "status": "success" if result.success else "failure",
-            "message": result.message,
-            "purchase_id": result.purchase.id if result.purchase else None,
-            "customer_id": result.customer.id if result.customer else None,
-        }
-    )

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import sys
+import base64
+import json
 from datetime import UTC, date, datetime
 from pathlib import Path
 
@@ -18,9 +20,10 @@ from fastapi.testclient import TestClient
 from app.db import Base, SessionLocal, engine
 from app.main import app
 from app.models import Customer, Purchase, RegistrationAttempt
+from app.routes import auth as auth_routes
 from app.routes.admin import require_admin
 from app.web import format_date_only, format_dt
-from app.services import seed_admin_users
+from app.services import daily_activity, list_purchases, seed_admin_users
 
 
 def reset_database() -> None:
@@ -146,6 +149,176 @@ def test_public_register_allows_empty_email():
         assert customer.email is None
 
 
+def test_public_register_matches_existing_customer_case_insensitively_and_enriches_email():
+    reset_database()
+
+    with SessionLocal() as db:
+        customer = make_customer(db, first_name="Pepe", last_name="Juarez", phone="1565659", email=None)
+        db.commit()
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/public/register",
+            data={
+                "first_name": "pepe",
+                "last_name": "JUAREZ",
+                "phone": "1565659",
+                "email": "PEPE@J.COM",
+                "public_token": "qr-test",
+            },
+            follow_redirects=True,
+        )
+
+    assert response.status_code == 200
+    assert "Registro exitoso" in response.text
+
+    with SessionLocal() as db:
+        assert db.query(Customer).count() == 1
+        updated_customer = db.query(Customer).first()
+        assert updated_customer is not None
+        assert updated_customer.id == customer.id
+        assert updated_customer.first_name == "Pepe"
+        assert updated_customer.last_name == "Juarez"
+        assert updated_customer.email == "pepe@j.com"
+
+        purchases = db.query(Purchase).all()
+        assert len(purchases) == 1
+        assert purchases[0].customer_id == customer.id
+
+
+def test_public_register_page_prefills_session_identity():
+    reset_database()
+
+    original_exchange_code = auth_routes._exchange_code
+    original_fetch_userinfo = auth_routes._fetch_userinfo
+    auth_routes._exchange_code = lambda code, redirect_uri: {"access_token": "fake-token"}
+    auth_routes._fetch_userinfo = lambda access_token: {
+        "sub": "google-sub-123",
+        "email": "santiheredia2013@example.com",
+        "given_name": "Santi",
+        "family_name": "Heredia",
+        "name": "Santi Heredia",
+        "email_verified": True,
+    }
+    try:
+        with TestClient(app) as client:
+            login = client.get("/auth/public/google/login?next=/r/qr-test", follow_redirects=False)
+            assert login.status_code == 303
+
+            session_cookie = client.cookies.get("clients_qr_session")
+            assert session_cookie is not None
+            encoded_payload = session_cookie.split(".", 1)[0]
+            payload = json.loads(base64.urlsafe_b64decode(encoded_payload.encode("ascii")).decode("utf-8"))
+            state = payload["public_oauth_state"]
+
+            callback = client.get(f"/auth/public/google/callback?code=fake-code&state={state}", follow_redirects=False)
+            assert callback.status_code == 303
+
+            register_page = client.get("/r/qr-test")
+            assert register_page.status_code == 200
+            assert 'value="Santi"' in register_page.text
+            assert 'value="Heredia"' in register_page.text
+            assert 'value="santiheredia2013@example.com"' in register_page.text
+    finally:
+        auth_routes._exchange_code = original_exchange_code
+        auth_routes._fetch_userinfo = original_fetch_userinfo
+
+
+def test_public_register_persists_form_values_between_visits():
+    reset_database()
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/public/register",
+            data={
+                "first_name": "Ana",
+                "last_name": "Perez",
+                "phone": "1565659",
+                "email": "ana@example.com",
+                "public_token": "qr-test",
+            },
+            follow_redirects=True,
+        )
+        assert response.status_code == 200
+
+        register_page = client.get("/r/qr-test")
+        assert register_page.status_code == 200
+        assert 'value="Ana"' in register_page.text
+        assert 'value="Perez"' in register_page.text
+        assert 'value="ana@example.com"' in register_page.text
+        assert 'value="1565659"' in register_page.text
+
+
+def test_public_register_ignores_admin_session_data():
+    reset_database()
+
+    with TestClient(app) as client:
+        login = client.post(
+            "/auth/admin/local/login",
+            data={"email": "admin@example.com", "phone": "5551234"},
+            follow_redirects=False,
+        )
+        assert login.status_code == 303
+
+        response = client.post(
+            "/api/public/register",
+            data={
+                "first_name": "Cliente",
+                "last_name": "Real",
+                "phone": "+54 11 4444 5555",
+                "email": "cliente@example.com",
+                "public_token": "qr-test",
+            },
+            follow_redirects=True,
+        )
+
+    assert response.status_code == 200
+
+    with SessionLocal() as db:
+        customer = db.query(Customer).first()
+        purchase = db.query(Purchase).first()
+        assert customer is not None
+        assert customer.first_name == "Cliente"
+        assert customer.last_name == "Real"
+        assert customer.phone == "541144445555"
+        assert customer.email == "cliente@example.com"
+        assert purchase is not None
+        assert purchase.customer_id == customer.id
+
+
+def test_public_pages_use_mobile_friendly_public_shell_styles():
+    reset_database()
+
+    with TestClient(app) as client:
+        register_page = client.get("/r/qr-test")
+        result_page = client.get("/r/qr-test/result")
+
+    assert register_page.status_code == 200
+    assert result_page.status_code == 200
+
+    assert "shell-public" in register_page.text
+    assert "public-register-grid" in register_page.text
+    assert "calc(100dvh - 2.5rem)" in register_page.text
+    assert "background-attachment: scroll" in register_page.text
+    assert "shell-public-result" in result_page.text
+    assert "body-public-bg" in result_page.text
+    assert "Respuesta final para el cliente" in result_page.text
+
+
+def test_public_register_phone_input_allows_only_digits_in_browser():
+    reset_database()
+
+    with TestClient(app) as client:
+        register_page = client.get("/r/qr-test")
+
+    assert register_page.status_code == 200
+    assert 'name="phone"' in register_page.text
+    assert 'type="tel"' in register_page.text
+    assert 'inputmode="numeric"' in register_page.text
+    assert 'pattern="[0-9]*"' in register_page.text
+    assert "this.value=this.value.replace(/\\D/g, '')" in register_page.text
+
+
 def test_public_register_rejects_invalid_email_and_phone():
     reset_database()
 
@@ -214,6 +387,14 @@ def test_admin_local_login_allows_panel_access():
         assert "admin-logo" in dashboard.text
         assert 'autocomplete="off"' in dashboard.text
         assert "focusin" in dashboard.text
+        assert dashboard.text.count('<button class="section-toggle" type="button" data-toggle-section') == 3
+        assert dashboard.text.count('class="section-body" hidden') == 2
+        assert "purchases-section" in dashboard.text
+        assert "purchases-scrollbar-top" in dashboard.text
+        assert "purchases-scrollbar-bottom" in dashboard.text
+        assert "max-height: calc(5 * 3.6rem + 3.25rem);" in dashboard.text
+        assert "overflow-y: auto;" in dashboard.text
+        assert "position: sticky;" in dashboard.text
 
 
 def test_admin_can_update_customer_tier_and_purchase_details():
@@ -332,7 +513,7 @@ def test_admin_rejects_invalid_tier_and_amount_updates():
         app.dependency_overrides.pop(require_admin, None)
 
 
-def test_admin_filters_and_stats_work():
+def test_admin_dashboard_filters_and_stats_work():
     reset_database()
 
     with SessionLocal() as db:
@@ -353,32 +534,17 @@ def test_admin_filters_and_stats_work():
     app.dependency_overrides[require_admin] = lambda: "admin@example.com"
     try:
         with TestClient(app) as client:
-            response = client.get("/api/admin/customers?q=Ana")
+            response = client.get("/admin?q=Ana&date_from=2026-05-01&date_to=2026-05-31")
             assert response.status_code == 200
-            data = response.json()
-            assert len(data["items"]) == 1
+            assert "Panel de administracion" in response.text
+            assert "Interacciones" in response.text
+            assert "Compras" in response.text
+            assert "Ana Perez" in response.text
+            assert "Bruno Diaz" not in response.text
 
-            response = client.get("/api/admin/purchases?purchase_status=approved")
-            assert response.status_code == 200
-            purchases = response.json()["items"]
-            assert len(purchases) == 2
-
-            response = client.get("/api/admin/customers?inactive_since=2026-05-05")
-            assert response.status_code == 200
-            inactive = {item["first_name"] for item in response.json()["items"]}
-            assert inactive == {"Bruno", "Carla"}
-
-            response = client.get("/api/admin/stats?date_from=2026-05-01&date_to=2026-05-31")
-            assert response.status_code == 200
-            stats = response.json()
-            assert stats["total_interactions"] == 3
-            assert stats["success_interactions"] == 2
-            assert stats["failed_interactions"] == 1
-            assert stats["approved_purchases"] == 1
-            assert stats["rejected_purchases"] == 1
-            assert stats["pending_purchases"] == 1
-            assert stats["failed_purchases"] == 0
-            assert stats["unique_customers"] == 2
+            assert client.get("/api/admin/purchases?purchase_status=approved").status_code == 404
+            assert client.get("/api/admin/stats?date_from=2026-05-01&date_to=2026-05-31").status_code == 404
+            assert client.post("/api/public/purchase-intent", json={"first_name": "Ana"}).status_code == 404
 
             with SessionLocal() as verify_db:
                 pending_purchase = verify_db.query(Purchase).filter(Purchase.status == "pending").first()
@@ -395,6 +561,73 @@ def test_admin_filters_and_stats_work():
                 assert updated.status == "approved"
     finally:
         app.dependency_overrides.pop(require_admin, None)
+
+
+def test_daily_activity_uses_buenos_aires_dates_and_exact_date():
+    reset_database()
+
+    with SessionLocal() as db:
+        customer = make_customer(db, first_name="Ana", last_name="Perez", phone="111", email="ana@example.com")
+        make_attempt(db, customer_id=customer.id, status="success", created_at=datetime(2026, 5, 10, 2, tzinfo=UTC))
+        make_purchase(db, customer_id=customer.id, status="approved", purchase_date=datetime(2026, 5, 10, 2, tzinfo=UTC))
+        make_attempt(db, customer_id=customer.id, status="success", created_at=datetime(2026, 5, 10, 15, tzinfo=UTC))
+        make_purchase(db, customer_id=customer.id, status="pending", purchase_date=datetime(2026, 5, 10, 15, tzinfo=UTC))
+        db.commit()
+
+        exact_activity = daily_activity(db, exact_date=date(2026, 5, 9))
+        assert exact_activity == [
+            {
+                "day": "2026-05-09",
+                "attempts": 1,
+                "purchases": 1,
+                "approved": 1,
+                "rejected": 0,
+                "failed": 0,
+                "pending": 0,
+            }
+        ]
+
+        range_activity = daily_activity(db, date_from=date(2026, 5, 10), date_to=date(2026, 5, 10))
+        assert range_activity == [
+            {
+                "day": "2026-05-10",
+                "attempts": 1,
+                "purchases": 1,
+                "approved": 0,
+                "rejected": 0,
+                "failed": 0,
+                "pending": 1,
+            }
+        ]
+
+
+def test_purchases_are_sorted_by_id_descending():
+    reset_database()
+
+    with SessionLocal() as db:
+        customer = make_customer(db, first_name="Ana", last_name="Perez", phone="111", email="ana@example.com")
+        first = make_purchase(db, customer_id=customer.id, status="pending", purchase_date=datetime(2026, 5, 10, 12, tzinfo=UTC))
+        second = make_purchase(db, customer_id=customer.id, status="approved", purchase_date=datetime(2026, 5, 11, 12, tzinfo=UTC))
+        third = make_purchase(db, customer_id=customer.id, status="rejected", purchase_date=datetime(2026, 5, 12, 12, tzinfo=UTC))
+        db.commit()
+
+        purchases = list_purchases(db)
+        assert [item["id"] for item in purchases] == [third.id, second.id, first.id]
+
+
+def test_daily_activity_is_sorted_from_newest_to_oldest():
+    reset_database()
+
+    with SessionLocal() as db:
+        customer = make_customer(db, first_name="Ana", last_name="Perez", phone="111", email="ana@example.com")
+        make_attempt(db, customer_id=customer.id, status="success", created_at=datetime(2026, 5, 9, 12, tzinfo=UTC))
+        make_purchase(db, customer_id=customer.id, status="approved", purchase_date=datetime(2026, 5, 9, 12, tzinfo=UTC))
+        make_attempt(db, customer_id=customer.id, status="success", created_at=datetime(2026, 5, 10, 12, tzinfo=UTC))
+        make_purchase(db, customer_id=customer.id, status="pending", purchase_date=datetime(2026, 5, 10, 12, tzinfo=UTC))
+        db.commit()
+
+        activity = daily_activity(db)
+        assert [item["day"] for item in activity] == ["2026-05-10", "2026-05-09"]
 
 
 def test_format_helpers_accept_iso_strings_from_sqlite():

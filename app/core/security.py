@@ -12,11 +12,15 @@ def utcnow() -> datetime:
     return datetime.now(UTC)
 
 
-def normalize_email(value: str | None) -> str | None:
+def normalize_text(value: str | None) -> str | None:
     if value is None:
         return None
-    normalized = value.strip().lower()
+    normalized = value.strip().casefold()
     return normalized or None
+
+
+def normalize_email(value: str | None) -> str | None:
+    return normalize_text(value)
 
 
 def normalize_phone(value: str | None) -> str | None:
@@ -39,4 +43,3 @@ def safe_str(value: object | None) -> str:
     if value is None:
         return ""
     return str(value)
-
