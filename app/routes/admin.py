@@ -88,7 +88,7 @@ def _purchase_amount_display(value: int | None) -> str:
     return "-" if value is None else str(value)
 
 
-def purchase_details_form(
+def purchase_amount_form(
     purchase_id: int,
     *,
     description: str | None,
@@ -97,12 +97,40 @@ def purchase_details_form(
 ) -> SafeHTML:
     return SafeHTML(
         f"""
-        <form method="post" action="/api/admin/purchases/{purchase_id}/details" class="stack" style="min-width:280px;gap:0.4rem;">
+        <form method="post" action="/api/admin/purchases/{purchase_id}/details" class="stack" style="min-width:120px;gap:0.35rem;">
           <input type="hidden" name="return_to" value="{escape(return_to)}" />
-          <input class="input" name="description" placeholder="Descripcion" value="{escape(description or '')}" />
-          <input class="input" name="amount" type="number" min="0" step="1" placeholder="Monto" value="{escape(str(amount) if amount is not None else '')}" />
+          <input type="hidden" name="description" value="{escape(description or '')}" />
+          <input class="input" name="amount" type="number" min="0" step="1" placeholder="Monto" value="{escape(str(amount) if amount is not None else '')}" style="padding:0.45rem 0.55rem;" />
           <button class="action-btn" type="submit">Guardar</button>
         </form>
+        """
+    )
+
+
+def purchase_description_popup(
+    purchase_id: int,
+    *,
+    description: str | None,
+    amount: int | None,
+    return_to: str,
+) -> SafeHTML:
+    dialog_id = f"purchase-desc-{purchase_id}"
+    current_amount = escape(str(amount) if amount is not None else "")
+    return SafeHTML(
+        f"""
+        <button class="action-btn" type="button" data-open-dialog="{dialog_id}">Editar descripción</button>
+        <dialog id="{dialog_id}" class="mini-dialog">
+          <form method="post" action="/api/admin/purchases/{purchase_id}/details" class="stack" style="gap:0.55rem;min-width:280px;">
+            <strong style="font-size:1rem;">Editar descripción</strong>
+            <input type="hidden" name="return_to" value="{escape(return_to)}" />
+            <input type="hidden" name="amount" value="{current_amount}" />
+            <textarea class="input" name="description" rows="3" placeholder="Descripcion">{escape(description or '')}</textarea>
+            <div class="actions" style="justify-content:flex-end;">
+              <button class="action-btn" type="button" data-close-dialog>Cancelar</button>
+              <button class="action-btn approved" type="submit">Guardar</button>
+            </div>
+          </form>
+        </dialog>
         """
     )
 
@@ -237,29 +265,49 @@ async def admin_dashboard(
 
     filter_form = f"""
     <form class="filters" method="get" action="/admin">
-      <input class="input" name="q" placeholder="Nombre y/o apellido" value="{escape(q or '')}" autocomplete="off" />
-      <input class="input" name="phone" placeholder="Numero de tel" value="{escape(phone or '')}" autocomplete="off" />
-      <input class="input" name="email" placeholder="Mail" value="{escape(email or '')}" autocomplete="off" />
-      <select class="input" name="tier">
-        <option value="">Tier de cliente</option>
-        <option value="VIP" {"selected" if tier == "VIP" else ""}>VIP</option>
-        <option value="alto" {"selected" if tier == "alto" else ""}>alto</option>
-        <option value="medio" {"selected" if tier == "medio" else ""}>medio</option>
-        <option value="bajo" {"selected" if tier == "bajo" else ""}>bajo</option>
-      </select>
-      <input class="input" name="max_amount" type="number" min="0" step="1" placeholder="Monto maximo" value="{escape(max_amount or '')}" autocomplete="off" />
-      <input class="input" name="exact_date" type="date" value="{escape(exact_date or '')}" autocomplete="off" />
-      <input class="input" name="date_from" type="date" value="{escape(date_from or '')}" autocomplete="off" />
-      <input class="input" name="date_to" type="date" value="{escape(date_to or '')}" autocomplete="off" />
-      <input class="input" name="inactive_since" type="date" value="{escape(inactive_since or '')}" autocomplete="off" />
-      <select class="input" name="purchase_status">
-        <option value="">Estado de compras</option>
-        <option value="pending" {"selected" if purchase_status == "pending" else ""}>pendiente</option>
-        <option value="approved" {"selected" if purchase_status == "approved" else ""}>aprobada</option>
-        <option value="rejected" {"selected" if purchase_status == "rejected" else ""}>rechazada</option>
-        <option value="failed" {"selected" if purchase_status == "failed" else ""}>fallida</option>
-      </select>
-      <button type="submit">Filtrar</button>
+      <div class="filter-group">
+        <div class="filter-group-title">Filtros generales</div>
+        <input class="input" name="q" placeholder="Nombre y/o apellido" value="{escape(q or '')}" autocomplete="off" />
+        <input class="input" name="phone" placeholder="Numero de telefono" value="{escape(phone or '')}" autocomplete="off" />
+        <input class="input" name="email" placeholder="Mail (email)" value="{escape(email or '')}" autocomplete="off" />
+        <select class="input" name="tier">
+          <option value="">Tier de cliente</option>
+          <option value="VIP" {"selected" if tier == "VIP" else ""}>VIP</option>
+          <option value="alto" {"selected" if tier == "alto" else ""}>alto</option>
+          <option value="medio" {"selected" if tier == "medio" else ""}>medio</option>
+          <option value="bajo" {"selected" if tier == "bajo" else ""}>bajo</option>
+        </select>
+        <input class="input" name="max_amount" type="number" min="0" step="1" placeholder="Monto maximo" value="{escape(max_amount or '')}" autocomplete="off" />
+        <select class="input" name="purchase_status">
+          <option value="">Estado de compras</option>
+          <option value="pending" {"selected" if purchase_status == "pending" else ""}>pendiente</option>
+          <option value="approved" {"selected" if purchase_status == "approved" else ""}>aprobada</option>
+          <option value="rejected" {"selected" if purchase_status == "rejected" else ""}>rechazada</option>
+          <option value="failed" {"selected" if purchase_status == "failed" else ""}>fallida</option>
+        </select>
+      </div>
+      <div class="filter-group filter-group-dates">
+        <div class="filter-group-title">Filtros de fechas</div>
+        <div class="field">
+          <span class="field-label">Fecha exacta</span>
+          <input class="input" name="exact_date" type="date" value="{escape(exact_date or '')}" autocomplete="off" />
+        </div>
+        <div class="field">
+          <span class="field-label">Desde</span>
+          <input class="input" name="date_from" type="date" value="{escape(date_from or '')}" autocomplete="off" />
+        </div>
+        <div class="field">
+          <span class="field-label">Hasta</span>
+          <input class="input" name="date_to" type="date" value="{escape(date_to or '')}" autocomplete="off" />
+        </div>
+        <div class="field">
+          <span class="field-label">Inactivos desde</span>
+          <input class="input" name="inactive_since" type="date" value="{escape(inactive_since or '')}" autocomplete="off" />
+        </div>
+      </div>
+      <div class="filter-actions">
+        <button class="filter-submit" type="submit">Filtrar</button>
+      </div>
     </form>
     """
 
@@ -288,13 +336,14 @@ async def admin_dashboard(
                 str(row["id"]),
                 escape(f"{str(row.get('first_name') or '').strip()} {str(row.get('last_name') or '').strip()}".strip() or "-"),
                 escape(str(row.get("phone") or "-")),
-                escape(str(row.get("email") or "-")),
+                SafeHTML(f'<span class="compact-mail">{escape(str(row.get("email") or "-"))}</span>'),
                 escape(str(row.get("tier") or "-")),
                 escape(str(row.get("description") or "-")),
                 escape(_purchase_amount_display(row.get("amount"))),
                 escape(format_dt(row.get("purchase_date"))),
                 SafeHTML(status_badge(str(row.get("status") or "unknown"))),
-                purchase_details_form(int(row["id"]), description=row.get("description"), amount=row.get("amount"), return_to=_admin_return_path(request)),
+                purchase_description_popup(int(row["id"]), description=row.get("description"), amount=row.get("amount"), return_to=_admin_return_path(request)),
+                purchase_amount_form(int(row["id"]), description=row.get("description"), amount=row.get("amount"), return_to=_admin_return_path(request)),
                 purchase_status_actions(int(row["id"]), str(row.get("status") or "")),
             ]
         )
@@ -313,6 +362,97 @@ async def admin_dashboard(
     ]
 
     body = f"""
+    <style>
+      .filter-group {{
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 0.75rem;
+        padding: 0.9rem;
+        border: 1px solid rgba(148,163,184,0.14);
+        border-radius: 16px;
+        background: rgba(2, 6, 23, 0.28);
+        min-width: 0;
+      }}
+      .shell-light .filter-group {{
+        background: #f8fafc;
+        border-color: #dbe3ef;
+      }}
+      .filter-group-dates {{
+        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      }}
+      .filters {{
+        width: 100%;
+        grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.95fr);
+        align-items: start;
+        gap: 0.85rem;
+      }}
+      .filters > .filter-group,
+      .filters > .filter-actions {{
+        min-width: 0;
+      }}
+      .filter-group-title {{
+        grid-column: 1 / -1;
+        font-size: 0.8rem;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }}
+      .field {{
+        display: flex;
+        flex-direction: column;
+        gap: 0.25rem;
+      }}
+      .field-label {{
+        font-size: 0.78rem;
+        font-weight: 700;
+        color: var(--muted);
+      }}
+      .filter-actions {{
+        grid-column: 1 / -1;
+        display: flex;
+        justify-content: flex-end;
+        margin-top: 0.2rem;
+      }}
+      .filter-submit {{
+        width: auto;
+        min-width: 110px;
+        padding: 0.5rem 0.85rem;
+        font-size: 0.85rem;
+        border-radius: 10px;
+        line-height: 1;
+      }}
+      .compact-mail {{
+        display: inline-block;
+        max-width: 150px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        vertical-align: middle;
+      }}
+      .mini-dialog {{
+        border: 1px solid rgba(148,163,184,0.24);
+        border-radius: 16px;
+        padding: 0;
+        background: rgba(15, 23, 42, 0.98);
+        color: var(--text);
+        box-shadow: 0 24px 70px rgba(0,0,0,0.35);
+        width: min(92vw, 360px);
+      }}
+      .shell-light .mini-dialog {{
+        background: #ffffff;
+      }}
+      .mini-dialog::backdrop {{
+        background: rgba(2, 6, 23, 0.45);
+      }}
+      .mini-dialog form {{
+        padding: 1rem;
+      }}
+      .mini-dialog textarea {{
+        min-height: 96px;
+        resize: vertical;
+      }}
+    </style>
     {cards}
     <div class="panel filters-panel">
       <div class="small">Filtros activos</div>
@@ -329,8 +469,30 @@ async def admin_dashboard(
     </div>
     <div class="panel">
       <h2>Compras</h2>
-      {table(["ID", "Cliente", "Telefono", "Mail", "Tier", "Descripcion", "Monto", "Fecha", "Estado", "Edicion", "Acciones"], purchase_rows)}
+      {table(["ID", "Cliente", "Telefono", "Mail", "Tier", "Descripcion", "Monto", "Fecha", "Estado", "Descripcion popup", "Monto edit", "Acciones"], purchase_rows)}
     </div>
+    <script>
+      document.addEventListener("click", function (event) {{
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) {{
+          return;
+        }}
+        const openDialogId = target.getAttribute("data-open-dialog");
+        if (openDialogId) {{
+          const dialog = document.getElementById(openDialogId);
+          if (dialog instanceof HTMLDialogElement && !dialog.open) {{
+            dialog.showModal();
+          }}
+          return;
+        }}
+        if (target.hasAttribute("data-close-dialog")) {{
+          const dialog = target.closest("dialog");
+          if (dialog instanceof HTMLDialogElement && dialog.open) {{
+            dialog.close();
+          }}
+        }}
+      }});
+    </script>
     """
     return page("Panel de administracion", body, header_html=header_html, shell_class="shell shell-light")
 
