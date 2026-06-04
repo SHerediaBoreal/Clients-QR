@@ -4,7 +4,7 @@ import os
 import sys
 import base64
 import json
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta, timezone
 from pathlib import Path
 
 os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
@@ -20,6 +20,7 @@ from fastapi.testclient import TestClient
 from app.db import Base, SessionLocal, engine
 from app.main import app
 from app.models import Customer, Purchase, RegistrationAttempt
+from app.core.timezones import GMT_MINUS_3_TZ, end_of_day_utc, start_of_day_utc
 from app.routes import auth as auth_routes
 from app.routes.admin import require_admin
 from app.web import format_date_only, format_dt
@@ -389,12 +390,69 @@ def test_admin_local_login_allows_panel_access():
         assert "focusin" in dashboard.text
         assert dashboard.text.count('<button class="section-toggle" type="button" data-toggle-section') == 3
         assert dashboard.text.count('class="section-body" hidden') == 2
+        assert dashboard.text.count('class="table-scroll-container') == 2
+        assert "activity-section" in dashboard.text
+        assert "customers-section" in dashboard.text
         assert "purchases-section" in dashboard.text
         assert "purchases-scrollbar-top" in dashboard.text
         assert "purchases-scrollbar-bottom" in dashboard.text
+        assert dashboard.text.index("Acciones") < dashboard.text.index("Mail (opcional)")
         assert "max-height: calc(5 * 3.6rem + 3.25rem);" in dashboard.text
         assert "overflow-y: auto;" in dashboard.text
         assert "position: sticky;" in dashboard.text
+        assert "clients_qr_admin_dashboard_state:" in dashboard.text
+        assert "history.scrollRestoration = \"manual\"" in dashboard.text
+        assert "sessionStorage" in dashboard.text
+
+
+def test_admin_purchase_actions_respect_return_to():
+    reset_database()
+
+    with SessionLocal() as db:
+        customer = make_customer(db, first_name="Ana", last_name="Perez", phone="111", email="ana@example.com")
+        details_purchase = make_purchase(db, customer_id=customer.id, status="pending", purchase_date=datetime(2026, 5, 10, 12, tzinfo=UTC))
+        approve_purchase_item = make_purchase(db, customer_id=customer.id, status="pending", purchase_date=datetime(2026, 5, 11, 12, tzinfo=UTC))
+        reject_purchase_item = make_purchase(db, customer_id=customer.id, status="pending", purchase_date=datetime(2026, 5, 12, 12, tzinfo=UTC))
+        status_purchase_item = make_purchase(db, customer_id=customer.id, status="pending", purchase_date=datetime(2026, 5, 13, 12, tzinfo=UTC))
+        db.commit()
+
+    app.dependency_overrides[require_admin] = lambda: "admin@example.com"
+    return_to = "/admin?view=expanded&section=purchases"
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                f"/api/admin/purchases/{details_purchase.id}/details",
+                data={"description": "Compra grande", "amount": "1500", "return_to": return_to},
+                follow_redirects=False,
+            )
+            assert response.status_code == 303
+            assert response.headers["location"] == return_to
+
+            response = client.post(
+                f"/api/admin/purchases/{approve_purchase_item.id}/approve",
+                data={"return_to": return_to},
+                follow_redirects=False,
+            )
+            assert response.status_code == 303
+            assert response.headers["location"] == return_to
+
+            response = client.post(
+                f"/api/admin/purchases/{reject_purchase_item.id}/reject",
+                data={"return_to": return_to},
+                follow_redirects=False,
+            )
+            assert response.status_code == 303
+            assert response.headers["location"] == return_to
+
+            response = client.post(
+                f"/api/admin/purchases/{status_purchase_item.id}/status",
+                data={"status": "approved", "return_to": return_to},
+                follow_redirects=False,
+            )
+            assert response.status_code == 303
+            assert response.headers["location"] == return_to
+    finally:
+        app.dependency_overrides.pop(require_admin, None)
 
 
 def test_admin_can_update_customer_tier_and_purchase_details():
@@ -568,10 +626,10 @@ def test_daily_activity_uses_buenos_aires_dates_and_exact_date():
 
     with SessionLocal() as db:
         customer = make_customer(db, first_name="Ana", last_name="Perez", phone="111", email="ana@example.com")
-        make_attempt(db, customer_id=customer.id, status="success", created_at=datetime(2026, 5, 10, 2, tzinfo=UTC))
-        make_purchase(db, customer_id=customer.id, status="approved", purchase_date=datetime(2026, 5, 10, 2, tzinfo=UTC))
-        make_attempt(db, customer_id=customer.id, status="success", created_at=datetime(2026, 5, 10, 15, tzinfo=UTC))
-        make_purchase(db, customer_id=customer.id, status="pending", purchase_date=datetime(2026, 5, 10, 15, tzinfo=UTC))
+        make_attempt(db, customer_id=customer.id, status="success", created_at=datetime(2026, 5, 9, 15, tzinfo=GMT_MINUS_3_TZ))
+        make_purchase(db, customer_id=customer.id, status="approved", purchase_date=datetime(2026, 5, 9, 15, tzinfo=GMT_MINUS_3_TZ))
+        make_attempt(db, customer_id=customer.id, status="success", created_at=datetime(2026, 5, 10, 15, tzinfo=GMT_MINUS_3_TZ))
+        make_purchase(db, customer_id=customer.id, status="pending", purchase_date=datetime(2026, 5, 10, 15, tzinfo=GMT_MINUS_3_TZ))
         db.commit()
 
         exact_activity = daily_activity(db, exact_date=date(2026, 5, 9))
@@ -632,5 +690,14 @@ def test_daily_activity_is_sorted_from_newest_to_oldest():
 
 def test_format_helpers_accept_iso_strings_from_sqlite():
     assert format_dt("2026-05-28T12:34:56+00:00") == "2026-05-28 09:34:56"
+    assert format_dt(datetime(2026, 5, 28, 15, 26)) == "2026-05-28 15:26:00"
+    assert format_dt(datetime(2026, 5, 28, 12, 34, 56, tzinfo=timezone(timedelta(hours=1)))) == "2026-05-28 08:34:56"
     assert format_date_only("2026-05-28T12:34:56+00:00") == "2026-05-28"
     assert format_date_only(date(2026, 5, 28)) == "2026-05-28"
+
+
+def test_gmt_minus_three_is_fixed_and_daily_boundaries_use_it():
+    assert GMT_MINUS_3_TZ.utcoffset(None) == timedelta(hours=-3)
+    assert GMT_MINUS_3_TZ.tzname(None) == "GMT-3"
+    assert start_of_day_utc(date(2026, 5, 10)) == datetime(2026, 5, 10, 3, tzinfo=UTC)
+    assert end_of_day_utc(date(2026, 5, 10)) == datetime(2026, 5, 11, 2, 59, 59, 999999, tzinfo=UTC)

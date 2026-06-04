@@ -81,7 +81,7 @@ async def public_register_page(request: Request, public_token: str):
     </div>
     """
     return page(
-        "Fidelidad Suplementos YB",
+        "Clientes Suplementos YB",
         body,
         shell_class="shell shell-public",
         body_class="body-public-bg",

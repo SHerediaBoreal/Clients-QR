@@ -40,7 +40,7 @@ def require_admin(request: Request) -> str:
     return email
 
 
-def purchase_status_actions(purchase_id: int, current_status: str | None) -> SafeHTML:
+def purchase_status_actions(purchase_id: int, current_status: str | None, return_to: str) -> SafeHTML:
     current = (current_status or "").strip().lower()
     buttons = []
     for status, label in (("approved", "Aprobada"), ("rejected", "Rechazada"), ("pending", "Pendiente")):
@@ -49,10 +49,11 @@ def purchase_status_actions(purchase_id: int, current_status: str | None) -> Saf
             f"""
             <form method="post" action="/api/admin/purchases/{purchase_id}/status">
               <input type="hidden" name="status" value="{status}" />
+              <input type="hidden" name="return_to" value="{escape(return_to)}" />
               <button class="action-btn {status}" type="submit" {disabled}>{label}</button>
             </form>
             """
-    )
+        )
     return SafeHTML('<div class="row-actions">' + "".join(buttons) + "</div>")
 
 
@@ -214,6 +215,7 @@ async def admin_dashboard(
     )
     stats = compute_stats(db, exact_date=exact, date_from=start, date_to=end)
     daily = daily_activity(db, exact_date=exact, date_from=start, date_to=end)
+    return_to = _admin_return_path(request)
     header_html = f"""
     <div class="admin-header">
       <div class="admin-header-left">
@@ -336,7 +338,6 @@ async def admin_dashboard(
                 str(row["id"]),
                 escape(f"{str(row.get('first_name') or '').strip()} {str(row.get('last_name') or '').strip()}".strip() or "-"),
                 escape(str(row.get("phone") or "-")),
-                SafeHTML(f'<span class="compact-mail">{escape(str(row.get("email") or "-"))}</span>'),
                 escape(str(row.get("tier") or "-")),
                 escape(str(row.get("description") or "-")),
                 escape(_purchase_amount_display(row.get("amount"))),
@@ -344,7 +345,8 @@ async def admin_dashboard(
                 SafeHTML(status_badge(str(row.get("status") or "unknown"))),
                 purchase_description_popup(int(row["id"]), description=row.get("description"), amount=row.get("amount"), return_to=_admin_return_path(request)),
                 purchase_amount_form(int(row["id"]), description=row.get("description"), amount=row.get("amount"), return_to=_admin_return_path(request)),
-                purchase_status_actions(int(row["id"]), str(row.get("status") or "")),
+                purchase_status_actions(int(row["id"]), str(row.get("status") or ""), return_to),
+                SafeHTML(f'<span class="compact-mail">{escape(str(row.get("email") or "-"))}</span>'),
             ]
         )
 
@@ -456,6 +458,23 @@ async def admin_dashboard(
       .section-body[hidden] {{
         display: none !important;
       }}
+      .table-scroll-container {{
+        max-height: calc(5 * 3.6rem + 3.25rem);
+        overflow-y: auto;
+        scrollbar-gutter: stable;
+      }}
+      .table-scroll-container table {{
+        width: 100%;
+      }}
+      .table-scroll-container table thead th {{
+        position: sticky;
+        top: 0;
+        z-index: 3;
+        background: rgba(2, 6, 23, 0.96);
+      }}
+      .shell-light .table-scroll-container table thead th {{
+        background: #ffffff;
+      }}
       .compact-mail {{
         display: inline-block;
         max-width: 150px;
@@ -523,7 +542,7 @@ async def admin_dashboard(
       <div class="filter-summary">{filters_summary}</div>
     </div>
     <div class="panel filters-panel">{filter_form}</div>
-    <div class="panel section-panel">
+    <div class="panel section-panel" data-admin-section="activity">
       <div class="section-header">
         <h2 class="section-title">Actividad diaria</h2>
         <button class="section-toggle" type="button" data-toggle-section aria-expanded="false">
@@ -531,10 +550,12 @@ async def admin_dashboard(
         </button>
       </div>
       <div class="section-body" hidden>
-        {table(["Dia", "Interacciones", "Compras", "Aprobadas", "Rechazadas", "Fallidas", "Pendientes"], daily_rows)}
+        <div class="table-scroll-container activity-section">
+          {table(["Dia", "Interacciones", "Compras", "Aprobadas", "Rechazadas", "Fallidas", "Pendientes"], daily_rows)}
+        </div>
       </div>
     </div>
-    <div class="panel section-panel">
+    <div class="panel section-panel" data-admin-section="customers">
       <div class="section-header">
         <h2 class="section-title">Clientes</h2>
         <button class="section-toggle" type="button" data-toggle-section aria-expanded="false">
@@ -542,10 +563,12 @@ async def admin_dashboard(
         </button>
       </div>
       <div class="section-body" hidden>
-        {table(["Cliente", "Telefono", "Mail", "Tier", "Ultima compra", "Total", "Pend.", "Aprob.", "Rech.", "Fall.", "Detalle"], customer_rows)}
+        <div class="table-scroll-container customers-section">
+          {table(["Cliente", "Telefono", "Mail", "Tier", "Ultima compra", "Total", "Pend.", "Aprob.", "Rech.", "Fall.", "Detalle"], customer_rows)}
+        </div>
       </div>
     </div>
-    <div class="panel section-panel">
+    <div class="panel section-panel" data-admin-section="purchases">
       <div class="section-header">
         <h2 class="section-title">Compras</h2>
         <button class="section-toggle" type="button" data-toggle-section aria-expanded="false">
@@ -557,14 +580,82 @@ async def admin_dashboard(
           <div class="purchases-scrollbar-spacer" data-purchases-spacer></div>
         </div>
         <div class="purchases-table-scroll" data-purchases-table-scroll>
-          {table(["ID", "Cliente", "Telefono", "Mail (opcional)", "Tier", "Descripcion", "Monto", "Fecha", "Estado", "Descripcion", "Monto", "Acciones"], purchase_rows)}
+          {table(["ID", "Cliente", "Telefono", "Tier", "Descripcion", "Monto", "Fecha", "Estado", "Descripcion", "Monto", "Acciones", "Mail (opcional)"], purchase_rows)}
         </div>
         <div class="purchases-scrollbar purchases-scrollbar-bottom" data-purchases-scrollbar>
           <div class="purchases-scrollbar-spacer" data-purchases-spacer></div>
         </div>
       </div>
     </div>
-    <script>
+      <script>
+      if ("scrollRestoration" in window.history) {{
+        window.history.scrollRestoration = "manual";
+      }}
+
+      const adminStateStorageKey = "clients_qr_admin_dashboard_state:" + window.location.pathname + window.location.search;
+
+      function readAdminState() {{
+        try {{
+          const raw = window.sessionStorage.getItem(adminStateStorageKey);
+          if (!raw) {{
+            return null;
+          }}
+          const parsed = JSON.parse(raw);
+          return parsed && typeof parsed === "object" ? parsed : null;
+        }} catch (_error) {{
+          return null;
+        }}
+      }}
+
+      function writeAdminState(state) {{
+        try {{
+          window.sessionStorage.setItem(adminStateStorageKey, JSON.stringify(state));
+        }} catch (_error) {{
+          void _error;
+        }}
+      }}
+
+      function collectAdminState() {{
+        const openSections = Array.from(document.querySelectorAll(".section-panel"))
+          .filter(function (panel) {{
+            if (!(panel instanceof HTMLElement)) {{
+              return false;
+            }}
+            const body = panel.querySelector(".section-body");
+            return body instanceof HTMLElement && !body.hidden;
+          }})
+          .map(function (panel) {{
+            return panel.getAttribute("data-admin-section") || "";
+          }})
+          .filter(Boolean);
+
+        const purchasesSection = document.querySelector(".purchases-section");
+        const tableScroll = purchasesSection instanceof HTMLElement
+          ? purchasesSection.querySelector("[data-purchases-table-scroll]")
+          : null;
+
+        return {{
+          openSections: openSections,
+          windowScrollX: window.scrollX,
+          windowScrollY: window.scrollY,
+          purchaseScrollLeft: tableScroll instanceof HTMLElement ? tableScroll.scrollLeft : 0,
+          purchaseScrollTop: tableScroll instanceof HTMLElement ? tableScroll.scrollTop : 0,
+        }};
+      }}
+
+      let adminStateSaveScheduled = false;
+
+      function scheduleAdminStateSave() {{
+        if (adminStateSaveScheduled) {{
+          return;
+        }}
+        adminStateSaveScheduled = true;
+        window.requestAnimationFrame(function () {{
+          adminStateSaveScheduled = false;
+          writeAdminState(collectAdminState());
+        }});
+      }}
+
       function syncPurchasesScrollbars() {{
         const purchasesSection = document.querySelector(".purchases-section");
         if (!(purchasesSection instanceof HTMLElement)) {{
@@ -621,6 +712,7 @@ async def admin_dashboard(
             const target = event.currentTarget;
             if (target instanceof HTMLElement) {{
               syncFrom(target);
+              scheduleAdminStateSave();
             }}
           }}, {{ passive: true }});
         }});
@@ -637,9 +729,64 @@ async def admin_dashboard(
         syncPurchasesScrollbars();
       }}
 
+      function restoreAdminState() {{
+        const state = readAdminState();
+        if (!state) {{
+          return;
+        }}
+
+        const openSections = new Set(Array.isArray(state.openSections) ? state.openSections : []);
+        const panels = Array.from(document.querySelectorAll(".section-panel"));
+        panels.forEach(function (panel) {{
+          if (!(panel instanceof HTMLElement)) {{
+            return;
+          }}
+          const body = panel.querySelector(".section-body");
+          const toggle = panel.querySelector("[data-toggle-section]");
+          const sectionKey = panel.getAttribute("data-admin-section") || "";
+          const shouldOpen = openSections.has(sectionKey);
+          if (body instanceof HTMLElement) {{
+            body.hidden = !shouldOpen;
+          }}
+          if (toggle instanceof HTMLElement) {{
+            toggle.setAttribute("aria-expanded", shouldOpen ? "true" : "false");
+            const icon = toggle.querySelector(".section-toggle-icon");
+            if (icon) {{
+              icon.textContent = shouldOpen ? "▾" : "▸";
+            }}
+          }}
+        }});
+
+        window.requestAnimationFrame(function () {{
+          syncPurchasesScrollbars();
+
+          const purchasesSection = document.querySelector(".purchases-section");
+          const tableScroll = purchasesSection instanceof HTMLElement
+            ? purchasesSection.querySelector("[data-purchases-table-scroll]")
+            : null;
+
+          if (tableScroll instanceof HTMLElement) {{
+            tableScroll.scrollLeft = Number(state.purchaseScrollLeft) || 0;
+            tableScroll.scrollTop = Number(state.purchaseScrollTop) || 0;
+            syncPurchasesScrollbars();
+          }}
+
+          window.scrollTo(Number(state.windowScrollX) || 0, Number(state.windowScrollY) || 0);
+        }});
+      }}
+
       document.addEventListener("DOMContentLoaded", function () {{
         bindPurchasesScrollbars();
+        restoreAdminState();
       }});
+
+      window.addEventListener("scroll", scheduleAdminStateSave, {{ passive: true }});
+      window.addEventListener("pagehide", function () {{
+        writeAdminState(collectAdminState());
+      }});
+      document.addEventListener("submit", function () {{
+        writeAdminState(collectAdminState());
+      }}, true);
 
       document.addEventListener("click", function (event) {{
         const target = event.target;
@@ -663,6 +810,7 @@ async def admin_dashboard(
             if (icon) {{
               icon.textContent = expanded ? "▸" : "▾";
             }}
+            scheduleAdminStateSave();
           }}
           return;
         }}
@@ -742,6 +890,7 @@ async def admin_customer_detail(
     if customer is None:
         raise HTTPException(status_code=404, detail="Cliente no encontrado")
 
+    return_to = _admin_return_path(request, fallback=f"/admin/customers/{customer_id}")
     filtered_purchases = list_purchases(db, customer_id=customer_id)
     rows = [
         [
@@ -751,12 +900,10 @@ async def admin_customer_detail(
             escape(_purchase_amount_display(p.get("amount"))),
             SafeHTML(status_badge(str(p.get("status") or ""))),
             escape(str(p.get("source_token") or "-")),
-            purchase_status_actions(int(p["id"]), str(p.get("status") or "")),
+            purchase_status_actions(int(p["id"]), str(p.get("status") or ""), return_to),
         ]
         for p in filtered_purchases
     ]
-
-    return_to = _admin_return_path(request, fallback=f"/admin/customers/{customer_id}")
 
     body = f"""
     <p><a class="btn" href="/admin">Volver al panel</a></p>
@@ -823,6 +970,7 @@ async def api_admin_purchase_update_details(
 async def api_admin_purchase_approve(
     request: Request,
     purchase_id: int,
+    return_to: str | None = Form(None),
     admin_email: str = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
@@ -831,13 +979,14 @@ async def api_admin_purchase_approve(
         approve_purchase(db, purchase_id, admin_email)
     except NotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return RedirectResponse(url="/admin", status_code=303)
+    return RedirectResponse(url=_safe_redirect_path(return_to), status_code=303)
 
 
 @router.post("/api/admin/purchases/{purchase_id}/reject")
 async def api_admin_purchase_reject(
     request: Request,
     purchase_id: int,
+    return_to: str | None = Form(None),
     admin_email: str = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
@@ -846,7 +995,7 @@ async def api_admin_purchase_reject(
         reject_purchase(db, purchase_id, admin_email)
     except NotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return RedirectResponse(url="/admin", status_code=303)
+    return RedirectResponse(url=_safe_redirect_path(return_to), status_code=303)
 
 
 @router.post("/api/admin/purchases/{purchase_id}/status")
@@ -854,6 +1003,7 @@ async def api_admin_purchase_set_status(
     request: Request,
     purchase_id: int,
     status: str = Form(...),
+    return_to: str | None = Form(None),
     admin_email: str = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
@@ -864,4 +1014,4 @@ async def api_admin_purchase_set_status(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except NotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return RedirectResponse(url="/admin", status_code=303)
+    return RedirectResponse(url=_safe_redirect_path(return_to), status_code=303)
