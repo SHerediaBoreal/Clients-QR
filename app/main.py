@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -15,9 +16,11 @@ from app.routes.admin import router as admin_router
 from app.routes.public import router as public_router
 from app.services import seed_admin_users
 
+logger = logging.getLogger(__name__)
+
 
 def _sqlite_schema_needs_recreate() -> bool:
-    if not settings.database_url.startswith("sqlite"):
+    if not settings.is_sqlite:
         return False
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
@@ -39,6 +42,12 @@ async def lifespan(app: FastAPI):
     if _sqlite_schema_needs_recreate():
         Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
+    if settings.is_sqlite:
+        logger.info("Database in use: SQLite local (%s)", settings.resolved_database_url)
+    elif settings.database_env == "neon":
+        logger.info("Database in use: Neon PostgreSQL (%s)", engine.url.render_as_string(hide_password=True))
+    else:
+        logger.info("Database in use: %s (%s)", engine.url.get_backend_name(), engine.url.render_as_string(hide_password=True))
     if settings.admin_email_allowlist:
         with SessionLocal() as db:
             seed_admin_users(db, settings.admin_email_allowlist, settings.admin_local_accounts)

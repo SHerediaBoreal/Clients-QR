@@ -23,7 +23,7 @@ from app.models import Customer, Purchase, RegistrationAttempt
 from app.core.timezones import GMT_MINUS_3_TZ, end_of_day_utc, start_of_day_utc
 from app.routes import auth as auth_routes
 from app.routes.admin import require_admin
-from app.web import format_date_only, format_dt
+from app.web import format_date_only, format_dt, page
 from app.services import daily_activity, list_purchases, seed_admin_users
 
 
@@ -694,6 +694,16 @@ def test_format_helpers_accept_iso_strings_from_sqlite():
     assert format_dt(datetime(2026, 5, 28, 12, 34, 56, tzinfo=timezone(timedelta(hours=1)))) == "2026-05-28 08:34:56"
     assert format_date_only("2026-05-28T12:34:56+00:00") == "2026-05-28"
     assert format_date_only(date(2026, 5, 28)) == "2026-05-28"
+
+
+def test_page_includes_global_frontend_error_handlers():
+    response = page("Demo", "<p>Contenido</p>")
+
+    assert response.status_code == 200
+    assert 'id="frontend-error-banner"' in response.body.decode("utf-8")
+    assert "window.onerror" in response.body.decode("utf-8")
+    assert "window.onunhandledrejection" in response.body.decode("utf-8")
+    assert "reportUnexpectedError" in response.body.decode("utf-8")
 
 
 def test_gmt_minus_three_is_fixed_and_daily_boundaries_use_it():

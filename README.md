@@ -20,8 +20,8 @@ No se guarda monto, ni usuario que confirma la compra, ni beneficios en esta ver
 - Python
 - FastAPI
 - SQLAlchemy
-- PostgreSQL en Cloud SQL como objetivo principal
-- Cloud Run para despliegue
+- PostgreSQL en NeonDB como base de produccion
+- SQLite para desarrollo local
 - Google Sign-In para acceso administrativo
 
 ## Estructura del proyecto
@@ -41,9 +41,13 @@ El proyecto incluye un archivo `.env` en la raiz para que completes los valores 
 
 Variables disponibles:
 
-- `DATABASE_URL`: direccion de la base de datos.
-  - desarrollo local: `sqlite:///./clients_qr.db`
-  - produccion: `postgresql+psycopg://user:pass@host:5432/dbname`
+- `DATABASE_ENV`: seleccion del entorno de base de datos.
+  - `local` usa SQLite.
+  - `neon` usa la base declarada en `DATABASE_URL_NEON`.
+- `DATABASE_URL`: override explicito de la base activa. Si esta definido, tiene prioridad sobre todo lo demas.
+- `DATABASE_URL_LOCAL`: direccion de la base local.
+  - por defecto: `sqlite:///./clients_qr.db`
+- `DATABASE_URL_NEON`: direccion de NeonDB para produccion.
 - `SECRET_KEY`: clave privada para firmar sesiones.
 - `PUBLIC_TOKEN`: token fijo que usa el QR publico.
 - `SESSION_COOKIE_SECURE`: `true` en produccion, `false` en local.
@@ -81,7 +85,8 @@ pip install -r requirements.txt
 ### 4. Completar el archivo `.env`
 
 Definilo con tus valores reales.
-Para pruebas locales, `DATABASE_URL` puede quedar en SQLite.
+Para pruebas locales, podes dejar `DATABASE_ENV=local` y usar la SQLite por defecto.
+Si queres apuntar a Neon, definí `DATABASE_ENV=neon` y `DATABASE_URL_NEON`.
 
 ### 5. Levantar la aplicacion
 
@@ -252,11 +257,20 @@ pytest -q -p no:cacheprovider
 
 Para produccion, la recomendacion es:
 
-- desplegar la app en Cloud Run;
-- usar Cloud SQL PostgreSQL como base de datos;
+- desplegar la app en el host que se defina para produccion;
+- usar NeonDB PostgreSQL como base de datos;
 - guardar secretos y credenciales en el entorno de despliegue;
 - dejar `SESSION_COOKIE_SECURE=true`;
 - configurar Google OAuth con el dominio real del sistema.
+
+## Cambio entre bases
+
+El proyecto soporta dos bases con el mismo esquema logico:
+
+- `DATABASE_ENV=local` -> SQLite local.
+- `DATABASE_ENV=neon` -> NeonDB, usando `DATABASE_URL_NEON`.
+
+Si queres forzar una base puntual sin importar el entorno, definí `DATABASE_URL` y va a tener prioridad.
 
 ## Notas operativas
 

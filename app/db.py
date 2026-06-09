@@ -13,17 +13,19 @@ class Base(DeclarativeBase):
     pass
 
 
+database_url = settings.resolved_database_url
+
 engine_kwargs = {
     "future": True,
     "pool_pre_ping": True,
 }
 
-if settings.database_url.startswith("sqlite"):
+if settings.is_sqlite:
     engine_kwargs["connect_args"] = {"check_same_thread": False}
-    if "memory" in settings.database_url or settings.database_url.endswith("://"):
+    if "memory" in database_url or database_url.endswith("://"):
         engine_kwargs["poolclass"] = StaticPool
 
-engine = create_engine(settings.database_url, **engine_kwargs)
+engine = create_engine(database_url, **engine_kwargs)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False, future=True)
 
 

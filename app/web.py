@@ -589,6 +589,34 @@ def page(
       border-radius: 14px;
       margin-bottom: 1rem;
     }}
+    .frontend-error-banner {{
+      position: fixed;
+      top: 1rem;
+      left: 1rem;
+      right: 1rem;
+      z-index: 9999;
+      display: none;
+      align-items: flex-start;
+      gap: 0.75rem;
+      padding: 0.9rem 1rem;
+      border-radius: 14px;
+      border: 1px solid rgba(220,38,38,0.35);
+      background: rgba(17,24,39,0.96);
+      color: var(--text);
+      box-shadow: 0 20px 50px rgba(0,0,0,0.35);
+      pointer-events: none;
+    }}
+    .frontend-error-banner.is-visible {{
+      display: flex;
+    }}
+    .frontend-error-banner strong {{
+      display: block;
+      margin-bottom: 0.15rem;
+    }}
+    .frontend-error-banner span {{
+      color: var(--muted);
+      line-height: 1.45;
+    }}
     .success {{
       background: rgba(22,163,74,0.12);
       border: 1px solid rgba(22,163,74,0.35);
@@ -647,6 +675,12 @@ def page(
   </style>
 </head>
 <body class="{escape(body_class)}">
+  <div class="frontend-error-banner" id="frontend-error-banner" role="alert" aria-live="assertive" aria-atomic="true" hidden>
+    <div>
+      <strong>Se produjo un error inesperado.</strong>
+      <span id="frontend-error-banner-message">Recargá la página para continuar.</span>
+    </div>
+  </div>
   <div class="container">
     <div class="shell">
       {header_block}
@@ -654,6 +688,46 @@ def page(
     </div>
   </div>
   <script>
+    (function () {{
+      const banner = document.getElementById("frontend-error-banner");
+      const bannerMessage = document.getElementById("frontend-error-banner-message");
+
+      function showGlobalErrorBanner(message) {{
+        if (!(banner instanceof HTMLElement) || !(bannerMessage instanceof HTMLElement)) {{
+          return;
+        }}
+        bannerMessage.textContent = message || "Recargá la página para continuar.";
+        banner.hidden = false;
+        banner.classList.add("is-visible");
+      }}
+
+      function reportUnexpectedError(source, error) {{
+        try {{
+          console.error("[frontend error]", source, error);
+        }} catch (_consoleError) {{
+          void _consoleError;
+        }}
+
+        showGlobalErrorBanner("Se detectó un error inesperado. Recargá la página e intentá nuevamente.");
+      }}
+
+      window.onerror = function (message, source, lineno, colno, error) {{
+        reportUnexpectedError("window.onerror", {{
+          message: message,
+          source: source,
+          line: lineno,
+          column: colno,
+          error: error,
+        }});
+        return false;
+      }};
+
+      window.onunhandledrejection = function (event) {{
+        reportUnexpectedError("window.onunhandledrejection", event && "reason" in event ? event.reason : event);
+        return false;
+      }};
+    }})();
+
     document.addEventListener("focusin", function (event) {{
       const target = event.target;
       if (!(target instanceof HTMLInputElement)) {{
